@@ -1,85 +1,101 @@
-import io
 import streamlit as st
-from typing import List
-import torch
+from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-from sentence_transformers import SentenceTransformer
-from transformers import T5Tokenizer, T5ForConditionalGeneration
-import faiss
-
-@st.cache_resource
-def load_embedding_model():
-    return SentenceTransformer('hkunlp/instructor-xl')
-
-@st.cache_resource
-def load_llm_model():
-    tokenizer = T5Tokenizer.from_pretrained('google/flan-t5-xxl')
-    model = T5ForConditionalGeneration.from_pretrained('google/flan-t5-xxl')
-    return tokenizer, model
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.embeddings import HuggingFaceInstructEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.chat_models import ChatOpenAI
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from htmlTemplates import css, bot_template, user_template
+from langchain.llms import HuggingFaceHub
 
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
-        # Streamlit's UploadedFile needs to be read as bytes
-        pdf_bytes = pdf.read()
-        # Create a BytesIO stream from the read bytes
-        pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
-        # Extract text from each page in the PDF
+        pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
             text += page.extract_text()
     return text
 
 
-def get_text_chunks(text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
-    chunks = []
-    start = 0
-    end = chunk_size
-    while start < len(text):
-        chunks.append(text[start:end])
-        start = end - chunk_overlap
-        end = start + chunk_size
+def get_text_chunks(text):
+    text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+    )
+    chunks = text_splitter.split_text(text)
     return chunks
 
-def get_vectorstore(text_chunks: List[str], model: SentenceTransformer):
-    embeddings = model.encode(text_chunks)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
-    return index, embeddings
 
-def get_relevant_chunk(query: str, index: faiss.IndexFlatL2, text_chunks: List[str], embeddings: torch.Tensor, model: SentenceTransformer):
-    query_embedding = model.encode([query])
-    D, I = index.search(query_embedding, k=1)
-    return text_chunks[I[0][0]], I[0][0]
+def get_vectorstore(text_chunks):
+    # Use Hugging Face embeddings, and make sure the API key is provided via Streamlit secrets
+    embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl", 
+                                               api_key=st.secrets["HUGGINGFACE_API_KEY"])
+    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+    return vectorstore
 
-def generate_response(context: str, query: str, tokenizer: T5Tokenizer, model: T5ForConditionalGeneration) -> str:
-    input_text = f"Context: {context}\nQuestion: {query}\nAnswer:"
-    input_ids = tokenizer.encode(input_text, return_tensors='pt', max_length=512, truncation=True)
-    
-    outputs = model.generate(
-        input_ids,
-        max_length=150,
-        num_beams=4,
-        no_repeat_ngram_size=2,
-        early_stopping=True
+
+def get_conversation_chain(vectorstore):
+    # Optional: Change the model if needed (e.g., FLAN-T5)
+    llm = HuggingFaceHub(repo_id="google/flan-t5-xxl", 
+                         model_kwargs={"temperature": 0.5, "max_length": 512},
+                         api_key=st.secrets["HUGGINGFACE_API_KEY"])
+
+    memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
+    conversation_chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=vectorstore.as_retriever(),
+        memory=memory
     )
-    
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response
+    return conversation_chain
 
-class PDFChatBot:
-    def __init__(self):
-        self.embedding_model = load_embedding_model()
-        self.tokenizer, self.generation_model = load_llm_model()
-        self.index = None
-        self.embeddings = None
-        self.text_chunks = None
 
-    def process_pdfs(self, pdf_docs):
-        raw_text = get_pdf_text(pdf_docs)
-        self.text_chunks = get_text_chunks(raw_text)
-        self.index, self.embeddings = get_vectorstore(self.text_chunks, self.embedding_model)
+def handle_userinput(user_question):
+    response = st.session_state.conversation({'question': user_question})
+    st.session_state.chat_history = response['chat_history']
 
-    def ask_question(self, question: str) -> str:
-        context, _ = get_relevant_chunk(question, self.index, self.text_chunks, self.embeddings, self.embedding_model)
-        response = generate_response(context, question, self.tokenizer, self.generation_model)
-        return response
+    for i, message in enumerate(st.session_state.chat_history):
+        if i % 2 == 0:
+            st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+        else:
+            st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+
+
+def main():
+    load_dotenv()
+    st.set_page_config(page_title="Chat with multiple PDFs", page_icon=":books:")
+    st.write(css, unsafe_allow_html=True)
+
+    if "conversation" not in st.session_state:
+        st.session_state.conversation = None
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = None
+
+    st.header("Chat with multiple PDFs :books:")
+    user_question = st.text_input("Ask a question about your documents:")
+    if user_question:
+        handle_userinput(user_question)
+
+    with st.sidebar:
+        st.subheader("Your documents")
+        pdf_docs = st.file_uploader("Upload your PDFs here and click on 'Process'", accept_multiple_files=True)
+        if st.button("Process"):
+            with st.spinner("Processing"):
+                # Get PDF text
+                raw_text = get_pdf_text(pdf_docs)
+
+                # Get text chunks
+                text_chunks = get_text_chunks(raw_text)
+
+                # Create vector store
+                vectorstore = get_vectorstore(text_chunks)
+
+                # Create conversation chain
+                st.session_state.conversation = get_conversation_chain(vectorstore)
+
+
+if __name__ == '__main__':
+    main()
