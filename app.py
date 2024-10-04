@@ -1,5 +1,5 @@
-import streamlit as st
 from dotenv import load_dotenv
+import streamlit as st
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -34,10 +34,13 @@ def get_vectorstore(text_chunks):
     return vectorstore
 
 def get_conversation_chain(vectorstore):
+    # Use the Hugging Face API key from Streamlit's secrets management
+    api_key = st.secrets["HUGGINGFACE_API_KEY"]
+    
     llm = HuggingFaceHub(
         repo_id="google/flan-t5-large", 
-        model_kwargs={"temperature":0.5, "max_length":512},
-        huggingfacehub_api_token="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"  # Replace with your actual token
+        model_kwargs={"temperature": 0.5, "max_length": 512},
+        huggingfacehub_api_token=api_key
     )
     
     memory = ConversationBufferMemory(
