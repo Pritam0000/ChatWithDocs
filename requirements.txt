@@ -12,7 +12,7 @@ keyring==25.4.1
 lockfile==0.12.2
 lxml==5.2.1
 mypy_extensions==1.0.0
-numpy==1.23.5
+numpy
 ordereddict==1.1
 protobuf==5.28.2
 pyOpenSSL==24.2.1
