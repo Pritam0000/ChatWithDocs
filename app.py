@@ -38,7 +38,7 @@ def get_conversation_chain(vectorstore):
     api_key = st.secrets["HUGGINGFACE_API_KEY"]
     
     llm = HuggingFaceHub(
-        repo_id="google/flan-t5-large", 
+        repo_id="google/flan-t5-xxl", 
         model_kwargs={"temperature": 0.5, "max_length": 512},
         huggingfacehub_api_token=api_key
     )
